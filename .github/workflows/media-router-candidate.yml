@@ -1,0 +1,76 @@
+name: StreemPilot media-router candidate
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/media-router-candidate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: media-router-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out independent test repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out exact private source candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: StreemPilot/streempilot-monorepo
+          ref: 59cf50748efcff145f41db9265f74b6fa3ab82b1
+          path: source
+          token: ${{ secrets.TEST_ORG_READ_TOKEN }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          cache: ''
+
+      - name: Verify exact media-router starter
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            source/scripts/render-media-router-starter.py \
+            source/scripts/render-formatted-media-router-starter.py \
+            source/tests/test_media_router_starter.py
+          python source/tests/test_media_router_starter.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path('source/services/wave2-rust-services.v1.json').read_text())
+          assert manifest['repositoryState'] == 'provisioning_required'
+          [service] = manifest['services']
+          assert service['repository'] == 'StreemPilot/streempilot-media-router.rs'
+          assert service['kind'] == 'media_router'
+          assert service['configuration'] == ['STREEMPILOT_MEDIA_ROUTER_MAX_DESTINATIONS']
+          PY
+
+      - name: Enforce repository and security boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = '59cf50748efcff145f41db9265f74b6fa3ab82b1'
+          ! grep -q 'streempilot-media-router.rs' source/.gitmodules
+          ! grep -q 'apps/streempilot-infra' source/.gitmodules
+          ! grep -q 'apps/streempilot-cli' source/.gitmodules
+          grep -q 'provisioning_required' source/services/wave2-rust-services.v1.json
+          if grep -RniE 'ghp_|github_pat_|private[_-]?key|bearer[[:space:]]+[A-Za-z0-9]' \
+            source/services/wave2-rust-services.v1.json \
+            source/scripts/render-media-router-starter.py \
+            source/scripts/render-formatted-media-router-starter.py; then
+            echo 'credential-shaped content entered the reviewed starter' >&2
+            exit 1
+          fi
