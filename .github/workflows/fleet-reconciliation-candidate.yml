@@ -1,0 +1,69 @@
+name: StreemPilot fleet reconciliation candidate
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/fleet-reconciliation-candidate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fleet-reconciliation-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out independent test repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out exact private source candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: StreemPilot/streempilot-monorepo
+          ref: 06265ccabfc9583ee218f22541179864304e55ca
+          path: source
+          token: ${{ secrets.TEST_ORG_READ_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+          submodules: false
+
+      - name: Run source fleet contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = '06265ccabfc9583ee218f22541179864304e55ca'
+          node source/scripts/validate-fleet.mjs
+          node --test source/tests/fleet-contract.test.mjs
+
+      - name: Verify exact gitlink and standalone boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(grep -c '^\[submodule ' source/.gitmodules)" -eq 14
+          ! grep -q 'apps/streempilot-infra' source/.gitmodules
+          ! grep -q 'apps/streempilot-cli' source/.gitmodules
+          grep -q '471360a2ceba65432e542f5ef58caac83b645210' <(git -C source ls-tree HEAD apps/streempilot-webrtc-adapter.rs)
+          grep -q 'c76388b3b3b8af5a52c3950421b6fc5d46360745' <(git -C source ls-tree HEAD apps/streempilot-media-router.rs)
+          grep -q 'ea7c1c8042122b4e4a7689aee026113fb607421d' <(git -C source ls-tree HEAD apps/streempilot-compositor.rs)
+          grep -q '8145e4717a9906c759ada560bff28adbda68667c' <(git -C source ls-tree HEAD apps/streempilot-recording.rs)
+          grep -q 'acaff0ab1fcbbae82eb52c72120a6edb10243a77' <(git -C source ls-tree HEAD apps/streempilot-destinations)
+          grep -q 'a27dfb5970a43d5c26f39ade71e0b21ec90cff4b' <(git -C source ls-tree HEAD apps/streempilot-chat.rs)
+
+      - name: Reject credential-shaped fleet metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RniE 'ghp_|github_pat_|private[_-]?key|bearer[[:space:]]+[A-Za-z0-9]' \
+            source/fleet/repositories.json \
+            source/.gitmodules \
+            source/README.md; then
+            echo 'credential-shaped content entered fleet metadata' >&2
+            exit 1
+          fi
